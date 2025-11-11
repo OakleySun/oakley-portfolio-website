@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 
 // ===== Tunables =====
 const ROWS_VISIBLE = 23; // decreased by 1
-const SCROLL_SECONDS = 8;
+const SCROLL_SECONDS = 8; // time to traverse half the column height
 const TEXT = "oakley sun.";
 const BASE_RADIUS = 160;
 const MAX_PUSH_PX = 240;
@@ -43,6 +43,7 @@ export default function OakleyTripleScroller() {
     setColScale((s) => ({ ...s, [which]: scale }));
   };
 
+  // Handle resize and initial fit
   useEffect(() => {
     const onResize = () => {
       setIsPhone(window.innerWidth <= 640);
@@ -57,6 +58,7 @@ export default function OakleyTripleScroller() {
     return () => window.removeEventListener("resize", onResize);
   }, []);
 
+  // Collect letters for animation/reset
   useEffect(() => {
     const collect = () => {
       const nodes = Array.from((gridRef.current && gridRef.current.querySelectorAll(".oak-ch")) || []);
@@ -73,6 +75,7 @@ export default function OakleyTripleScroller() {
     return () => clearTimeout(t);
   }, [isPhone, colScale.left, colScale.center, colScale.right]);
 
+  // Mouse tracking
   useEffect(() => {
     const onMove = (e) => {
       mouse.current.inside = true;
@@ -91,6 +94,7 @@ export default function OakleyTripleScroller() {
     };
   }, []);
 
+  // Cursor interaction loop
   useEffect(() => {
     const loop = () => {
       if (mouse.current.inside && lettersRef.current.length) {
@@ -99,7 +103,7 @@ export default function OakleyTripleScroller() {
           BASE_RADIUS,
           Math.max(24, Math.floor(gridWidth / (isPhone ? 6 : 20)))
         );
-        let targetWord = getWordUnderCursor(mouse.current.x, mouse.current.y) ||
+        const targetWord = getWordUnderCursor(mouse.current.x, mouse.current.y) ||
           getNearestWordWithinRadius(mouse.current.x, mouse.current.y, effRadius * 1.1);
         if (targetWord) {
           const picks = pickClosestInWord(targetWord, mouse.current.x, mouse.current.y, effRadius, AFFECTED_PER_WORD);
@@ -118,6 +122,46 @@ export default function OakleyTripleScroller() {
     rAF.current = requestAnimationFrame(loop);
     return () => { if (rAF.current) cancelAnimationFrame(rAF.current); };
   }, [isPhone]);
+
+  // ===== Infinite scroll with seamless wrap (no snap) — base+raw threshold =====
+  useEffect(() => {
+    let rafId = 0;
+    let start = 0;
+    const bases = new WeakMap(); // per-element base so offset never jumps
+
+    const tick = (now) => {
+      if (!start) start = now;
+      const elapsed = (now - start) / 1000; // seconds
+
+      const inners = document.querySelectorAll('.column-inner');
+      inners.forEach((el) => {
+        const parent = el.parentElement;
+        if (!parent) return;
+        const half = parent.getBoundingClientRect().height; // inner is 200% of this
+        if (!(half > 1)) return; // wait for layout
+
+        const speed = half / SCROLL_SECONDS; // px/sec to traverse half in SCROLL_SECONDS
+        const raw = elapsed * speed;         // monotonically increasing
+
+        // keep a running base so that (raw + base) is always in [0, half)
+        let base = bases.get(el) || 0;
+        let offset = raw + base;
+        // if we crossed the seam, subtract exactly one half; use while to guard against large jumps
+        while (offset >= half) { base -= half; offset -= half; }
+        // (no need for negative checks since raw grows monotonically)
+        bases.set(el, base);
+
+        const dir = el.getAttribute('data-dir') || 'up';
+        const y = dir === 'up' ? -offset : -(half - offset);
+        el.style.transform = `translate3d(0, ${y.toFixed(2)}px, 0)`;
+      });
+
+      rafId = requestAnimationFrame(tick);
+    };
+
+    rafId = requestAnimationFrame(tick);
+    return () => { if (rafId) cancelAnimationFrame(rafId); };
+  }, []);
 
   function triggerSequenceRandom(el, radius, isPhoneLocal, gridEl) {
     const r = el.getBoundingClientRect();
@@ -236,8 +280,8 @@ export default function OakleyTripleScroller() {
     <div className="col relative text-white font-black text-center overflow-visible z-[1]" ref={ref}>
       <div
         id={id}
-        className={`column-inner absolute w-full h-[200%] will-change-transform ${dir === "up" ? "animate-oak-up" : "animate-oak-down"}`}
-        style={{ animationDuration: `${SCROLL_SECONDS}s` }}
+        data-dir={dir}
+        className={"column-inner absolute w-full h-[200%] will-change-transform"}
       >
         <div className="w-full h-full">
           {rows.map((r) => (
@@ -264,20 +308,19 @@ export default function OakleyTripleScroller() {
 
   return (
     <div className="relative h-svh w-svw overflow-hidden bg-black" ref={gridRef}>
+      {/* fades */}
       <div className="pointer-events-none absolute inset-x-0 top-0 h-[18vh]" style={{ background: "linear-gradient(to bottom, #000 0%, rgba(0,0,0,0) 75%)", zIndex: 5 }} />
       <div className="pointer-events-none absolute inset-x-0 bottom-0 h-[18vh]" style={{ background: "linear-gradient(to top, #000 0%, rgba(0,0,0,0) 75%)", zIndex: 5 }} />
 
+      {/* grid */}
       <div className={`grid h-full ${isPhone ? "grid-cols-1" : "grid-cols-3"} gap-0`}>
         {!isPhone && <Column dir="down" scale={colScale.left} id="col-left" ref={leftRef} />}
         <Column dir="up" scale={colScale.center} id="col-center" ref={centerRef} />
         {!isPhone && <Column dir="down" scale={colScale.right} id="col-right" ref={rightRef} />}
       </div>
 
+      {/* Minimal styles (no keyframes) */}
       <style>{`
-        .column-inner.animate-oak-up { animation-name: oak-scroll-up; animation-timing-function: linear; animation-iteration-count: infinite; }
-        .column-inner.animate-oak-down { animation-name: oak-scroll-down; animation-timing-function: linear; animation-iteration-count: infinite; }
-        @keyframes oak-scroll-up { from { transform: translate3d(0,0,0);} to { transform: translate3d(0,-50%,0);} }
-        @keyframes oak-scroll-down { from { transform: translate3d(0,-50%,0);} to { transform: translate3d(0,0,0);} }
         .col { color: #fff; font-family: 'Arial Black', system-ui, sans-serif; font-weight: 900; line-height: 0.1; user-select: none; }
         .oak-ch { user-select: none; position: relative; z-index: 10; will-change: transform; }
       `}</style>
