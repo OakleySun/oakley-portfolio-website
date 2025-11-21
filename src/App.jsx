@@ -1,11 +1,11 @@
 import React, { useEffect, useMemo, useRef, useState, useLayoutEffect } from "react";
 
 /** ===== Tunables (unchanged) ===== */
-const ROWS_VISIBLE = 13;          // visible rows per column
+const ROWS_VISIBLE = 12;          // visible rows per column
 const SCROLL_SECONDS = 8;         // time for one full pass of the visible band
 const TEXT = "oakley sun.";
 const BASE_RADIUS = 160;
-const MAX_PUSH_PX = 240;
+const MAX_PUSH_PX = 50;
 const AFFECTED_PER_WORD = 2;
 const COOLDOWN_MS = 60;
 
@@ -91,10 +91,12 @@ export default function OakleyTripleScroller() {
       mouse.current.x = e.clientX;
       mouse.current.y = e.clientY;
     };
+  
     const onLeave = () => {
+      // Just mark the mouse as outside; let current animations finish naturally
       mouse.current.inside = false;
-      resetAllLetters(true);
     };
+  
     window.addEventListener("mousemove", onMove, { passive: true });
     const grid = gridRef.current;
     grid?.addEventListener("mouseleave", onLeave);
@@ -102,7 +104,7 @@ export default function OakleyTripleScroller() {
       window.removeEventListener("mousemove", onMove);
       grid?.removeEventListener("mouseleave", onLeave);
     };
-  }, []);
+  }, []);  
 
   /** Letter dodge/bounce loop */
   useEffect(() => {
@@ -112,7 +114,7 @@ export default function OakleyTripleScroller() {
         const gw = gridRef.current?.clientWidth || 1000;
         const effRadius = Math.max(
           BASE_RADIUS,
-          Math.max(24, Math.floor(gw / (isPhone ? 6 : 20)))
+          Math.max(20, Math.floor(gw / (isPhone ? 6 : 20)))
         );
         const target =
           getWordUnderCursor(mouse.current.x, mouse.current.y) ||
@@ -204,13 +206,12 @@ export default function OakleyTripleScroller() {
   }
 
   function triggerSequenceMirrored(key, radius) {
-    // compute push direction for the *specific* element under cursor (closest of the mirrors)
     const [colId, rowIndex, charIndex] = key.split("|");
     const selector = `.oak-col[data-col="${colId}"] .oak-ch[data-row="${rowIndex}"][data-char="${charIndex}"]`;
     const nodes = Array.from(document.querySelectorAll(selector));
     if (nodes.length === 0) return;
-
-    // pick the one closest to cursor to compute angle/push
+  
+    // pick clone closest to cursor to compute the direction
     let best = nodes[0], bestD = Infinity;
     for (const el of nodes) {
       const r = el.getBoundingClientRect();
@@ -219,7 +220,7 @@ export default function OakleyTripleScroller() {
       const d = Math.hypot(cx - mouse.current.x, cy - mouse.current.y);
       if (d < bestD) { bestD = d; best = el; }
     }
-
+  
     const gridEl = gridRef.current;
     const r = best.getBoundingClientRect();
     const cx = (r.left + r.right) / 2;
@@ -228,53 +229,55 @@ export default function OakleyTripleScroller() {
     const dy = cy - mouse.current.y;
     const dist = Math.max(1, Math.hypot(dx, dy));
     const proximity = Math.max(0, 1 - dist / radius);
-
+  
     const maxPush = Math.min(
       MAX_PUSH_PX,
       Math.max(24, (gridEl?.clientWidth || 1000) / (isPhone ? 10 : 30))
     );
-    const push = maxPush * (0.4 + 0.6 * proximity);
-
-    const angle = Math.random() * Math.PI * 2;
-    const x = Math.cos(angle) * push;
-    const y = Math.sin(angle) * push;
-
-    // Start animation on all mirrors with identical key
+    const push = maxPush * (0.15 + 0.35 * proximity);
+  
+    // smooth direction away from cursor
+    const ux = dx / dist;
+    const uy = dy / dist;
+    const x = ux * push;
+    const y = uy * push;
+  
+    // phase 1: move out
     applyToMirrors(key, (el) => {
       el.style.transition = `transform ${OUT_MS}ms cubic-bezier(.25,.9,.35,1)`;
       el.style.transform = `translate3d(${x.toFixed(1)}px, ${y.toFixed(1)}px, 0)`;
     });
-
-    // small pause, then overshoot, then return, all mirrored
+  
+    // small pause, then overshoot a bit past 0, then settle back to 0
     setTimeout(() => {
+      const bx = (-x * OVERSHOOT).toFixed(1);
+      const by = (-y * OVERSHOOT).toFixed(1);
+  
+      // phase 2: overshoot towards the origin
       applyToMirrors(key, (el) => {
-        el.style.transition = `transform 1ms linear`;
-        el.style.transform = `translate3d(${x.toFixed(1)}px, ${y.toFixed(1)}px, 0)`;
+        el.style.transition = `transform ${MID_MS}ms cubic-bezier(.3,1.05,.4,1)`;
+        el.style.transform = `translate3d(${bx}px, ${by}px, 0)`;
       });
-
+  
+      // phase 3: glide back to rest
       setTimeout(() => {
-        const bx = (-x * OVERSHOOT).toFixed(1);
-        const by = (-y * OVERSHOOT).toFixed(1);
         applyToMirrors(key, (el) => {
-          el.style.transition = `transform ${MID_MS}ms cubic-bezier(.3,1.05,.4,1)`;
-          el.style.transform = `translate3d(${bx}px, ${by}px, 0)`;
+          el.style.transition = `transform ${BACK_MS}ms cubic-bezier(.2,1,.3,1)`;
+          el.style.transform = `translate3d(0, 0, 0)`;
         });
-
+  
+        // clear animating flag after settle
         setTimeout(() => {
-          applyToMirrors(key, (el) => {
-            el.style.transition = `transform ${BACK_MS}ms cubic-bezier(.2,1,.3,1)`;
-            el.style.transform = `translate3d(0, 0, 0)`;
+          const now = Date.now();
+          const state = letterStateRef.current.get(key) || {};
+          letterStateRef.current.set(key, {
+            animating: false,
+            coolUntil: now + COOLDOWN_MS
           });
-          // clear animating flag slightly after finishing
-          setTimeout(() => {
-            const now = Date.now();
-            const state = letterStateRef.current.get(key) || {};
-            letterStateRef.current.set(key, { animating: false, coolUntil: now + COOLDOWN_MS });
-          }, BACK_MS + 20);
-        }, MID_MS);
-      }, PAUSE_MS);
-    }, OUT_MS);
-  }
+        }, BACK_MS + 20);
+      }, MID_MS);
+    }, PAUSE_MS + OUT_MS);
+  }  
 
   function resetAllLetters(withBounce = false) {
     // Reset every visible letter in all columns/clones
